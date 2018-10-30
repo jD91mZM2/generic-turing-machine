@@ -1,6 +1,6 @@
 use crate::{
     expander::{Expanded, FnBody},
-    parser::Move,
+    types::Move,
     FINISH_STATE
 };
 
