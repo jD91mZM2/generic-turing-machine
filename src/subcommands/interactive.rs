@@ -58,9 +58,9 @@ impl<'a> Interactive<'a> {
     fn print_location(&mut self) {
         if let Some(f) = self.runner.next_fn() {
             println!("Next state: {}", self.runner.next_state);
-            let start = u32::from(f.span.start()) as usize;
-            let end = u32::from(f.span.end()) as usize;
-            let line = 1 + &self.code[..start].lines().count();
+            let start = f.span.start().to_usize();
+            let end = f.span.end().to_usize();
+            let line = &self.code[..=start].lines().count();
             println!("{} {}", line, &self.code[start..end]);
         }
 

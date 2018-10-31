@@ -88,8 +88,8 @@ pub fn print_errors<R: rowan::TreeRoot<Types>>(code: &str, node: Node<R>) -> boo
     fail
 }
 pub fn print_span(code: &str, span: TextRange) {
-    let start = u32::from(span.start()) as usize;
-    let end   = u32::from(span.end()) as usize;
+    let start = span.start().to_usize();
+    let end   = span.end().to_usize();
 
     let mut ln = code[..end].lines().count();
     let llen = {

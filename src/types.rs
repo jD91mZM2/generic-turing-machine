@@ -3,6 +3,8 @@ use super::{
     tokenizer::Token
 };
 
+use rowan::SmolStr;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Move {
     Current,
@@ -18,7 +20,7 @@ pub trait TypedNode<R: rowan::TreeRoot<Types>> where Self: Sized {
     {
         self.node().borrowed()
             .leaf_text()
-            .map(|s| s.as_str())
+            .map(SmolStr::as_str)
     }
 }
 
@@ -44,7 +46,7 @@ macro_rules! impl_types {
 macro_rules! nth {
     ($self:expr; ($kind:ident) $n:expr) => {{
         $self.node().children()
-            .filter_map(|node| $kind::cast(node))
+            .filter_map($kind::cast)
             .nth($n)
             .expect("invalid ast")
     }}
@@ -61,7 +63,7 @@ impl_types! {
             nth!(self; (Ident) 0)
         }
         pub fn generics(&self) -> impl Iterator<Item = Type<R>> {
-            self.node().children().filter_map(|node| Type::cast(node))
+            self.node().children().filter_map(Type::cast)
         }
     },
     Char (Token::Char) {
@@ -117,10 +119,10 @@ impl_types! {
     },
     Root (Token::Root) {
         pub fn start_assignments(&self) -> impl Iterator<Item = SetStart<R>> {
-            self.node().children().filter_map(|node| SetStart::cast(node))
+            self.node().children().filter_map(SetStart::cast)
         }
         pub fn functions(&self) -> impl Iterator<Item = Function<R>> {
-            self.node().children().filter_map(|node| Function::cast(node))
+            self.node().children().filter_map(Function::cast)
         }
     }
 }
