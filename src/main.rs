@@ -2,6 +2,8 @@
 #[macro_use] extern crate failure;
 
 use clap::{AppSettings, Arg, SubCommand};
+use rowan::TextRange;
+use std::{fs, io::{self, prelude::*}};
 
 mod expander;
 mod parser;
@@ -11,10 +13,8 @@ mod tokenizer;
 mod types;
 
 use self::expander::Expander;
-use self::parser::Parser;
-use self::tokenizer::{Span, Tokenizer};
-
-use std::{fs, io::{self, prelude::*}};
+use self::parser::{Node, Types, Parser};
+use self::tokenizer::{Token, Tokenizer};
 
 pub const FINISH_STATE: &str = "finish";
 
@@ -37,28 +37,21 @@ fn main() -> io::Result<()> {
         },
         Some(path) => fs::read_to_string(path)?
     };
-    let tokens = match Tokenizer::new(code.chars()).collect::<Result<Vec<_>, _>>() {
-        Ok(tokens) => tokens,
-        Err((span, err)) => {
-            if let Some(span) = span {
-                print_span(&code, span);
-            }
-            eprintln!("-> failed to tokenize: {}", err);
-            return Ok(());
+    let ast = Parser::new(Tokenizer::new(&code)).parse();
+    let ast = ast.borrowed();
+
+    let mut error = print_errors(&code, ast);
+    if !ast.root_data().is_empty() {
+        error = true;
+        for error in ast.root_data() {
+            eprintln!("error: {}", error);
         }
-    };
-    let ast = match Parser::new(tokens).parse() {
-        Ok(None) => return Ok(()),
-        Ok(Some(ast)) => ast,
-        Err((span, err)) => {
-            if let Some(span) = span {
-                print_span(&code, span);
-            }
-            eprintln!("-> failed to parse: {}", err);
-            return Ok(());
-        }
-    };
-    let expanded = match Expander::expand(&ast) {
+    }
+    if error {
+        return Ok(());
+    }
+
+    let expanded = match Expander::expand(ast) {
         Ok(functions) => functions,
         Err((span, err)) => {
             if let Some(span) = span {
@@ -82,9 +75,21 @@ fn main() -> io::Result<()> {
 
     Ok(())
 }
-pub fn print_span(code: &str, span: Span) {
-    let start = span.start as usize;
-    let end   = span.end.map(|i| i as usize).unwrap_or(start + 1);
+pub fn print_errors<R: rowan::TreeRoot<Types>>(code: &str, node: Node<R>) -> bool {
+    let mut fail = false;
+    if node.kind() == Token::Error {
+        print_span(code, node.range());
+        eprintln!("-> error: unexpected tokens");
+        fail = true;
+    }
+    for child in node.children() {
+        fail = print_errors(code, child) || fail;
+    }
+    fail
+}
+pub fn print_span(code: &str, span: TextRange) {
+    let start = span.start().to_usize();
+    let end   = span.end().to_usize();
 
     let mut ln = code[..end].lines().count();
     let llen = {
@@ -100,9 +105,11 @@ pub fn print_span(code: &str, span: Span) {
     let mut s = Some(start);
     for _ in 0..2 {
         s = s.and_then(|s| code[..s].rfind('\n'));
+        if s.is_some() {
+            ln -= 1;
+        }
     }
     let mut s = s.map(|i| i + 1).unwrap_or(0);
-    ln -= 1;
 
     let mut prev = s;
     while prev < end {

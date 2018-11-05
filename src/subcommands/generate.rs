@@ -1,6 +1,6 @@
 use crate::{
     expander::Expanded,
-    parser::Move
+    types::Move
 };
 
 pub fn main(expanded: Expanded) {

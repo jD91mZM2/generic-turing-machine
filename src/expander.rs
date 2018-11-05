@@ -1,9 +1,10 @@
 use crate::{
-    parser::{AST, Move},
-    tokenizer::Span,
-    types::{Ident, Root, TypedNode},
+    parser::{Types, Node},
+    types::{Move, Type, Root, TypedNode},
     FINISH_STATE
 };
+
+use rowan::TextRange;
 use std::collections::HashMap;
 
 #[derive(Debug, Fail, PartialEq, Eq)]
@@ -18,7 +19,7 @@ pub enum GenerateError {
     Unknown(String)
 }
 
-type Result<T> = std::result::Result<T, (Option<Span>, GenerateError)>;
+type Result<T> = std::result::Result<T, (Option<TextRange>, GenerateError)>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FnSignature {
@@ -31,7 +32,7 @@ pub struct FnSignature {
 }
 #[derive(Debug, Clone)]
 pub struct FnBody {
-    pub span: Span,
+    pub span: TextRange,
     pub do_write: Option<u8>,
     pub do_state: String,
     pub do_move: Move
@@ -39,9 +40,9 @@ pub struct FnBody {
 
 pub struct Expanded {
     pub start: String,
-    pub start_span: Span,
+    pub start_span: TextRange,
     pub functions: HashMap<FnSignature, Option<FnBody>>,
-    pub unreachable: Vec<Span>
+    pub unreachable: Vec<TextRange>
 }
 
 #[derive(Default)]
@@ -49,14 +50,14 @@ pub struct Expander {
     functions: HashMap<FnSignature, Option<FnBody>>
 }
 impl Expander {
-    pub fn expand(ast: &AST) -> Result<Expanded> {
-        let root = Root::cast(&ast.arena, ast.root).expect("invalid ast");
+    pub fn expand<R: rowan::TreeRoot<Types>>(ast: Node<R>) -> Result<Expanded> {
+        let root = Root::cast(ast).expect("invalid ast");
 
         // Find start
         let mut starts = root.start_assignments();
         let start = starts.next().ok_or((None, GenerateError::MultipleStart))?;
         if let Some(start2) = starts.next() {
-            return Err((Some(start2.node().span), GenerateError::MultipleStart));
+            return Err((Some(start2.node().range()), GenerateError::MultipleStart));
         }
 
         // Expand each path recursively, from start
@@ -66,20 +67,26 @@ impl Expander {
         // Find paths not reachable from the start
         let mut unreachable = Vec::new();
         for f in root.functions() {
-            if expander.functions.keys().all(|s| f.match_state().name() != &s.match_state[..s.original_len]) {
-                unreachable.push(f.node().span);
+            if expander.functions.keys().all(|s| f.match_state().name().as_str() != &s.match_state[..s.original_len]) {
+                unreachable.push(f.node().range());
             }
         }
 
         Ok(Expanded {
             start: start_name,
-            start_span: start.node().span,
+            start_span: start.node().range(),
             functions: expander.functions,
             unreachable
         })
     }
-    fn expand_fn(&mut self, root: &Root, invocation: &Ident, vars: Option<&HashMap<String, String>>) -> Result<String> {
+    fn expand_fn<R: rowan::TreeRoot<Types>>(
+        &mut self,
+        root: &Root<R>,
+        invocation: &Type<R>,
+        vars: Option<&HashMap<String, String>>
+    ) -> Result<String> {
         let name = invocation.name();
+        let name = name.as_str();
         if name == FINISH_STATE {
             return Ok(String::from(FINISH_STATE));
         }
@@ -88,11 +95,11 @@ impl Expander {
         }
 
         let mut functions = root.functions()
-            .filter(|f| f.match_state().name() == name)
+            .filter(|f| f.match_state().name().as_str() == name)
             .peekable();
 
         // Make sure we have at least one
-        functions.peek().ok_or_else(|| (Some(invocation.node().span), GenerateError::Unknown(name.to_string())))?;
+        functions.peek().ok_or_else(|| (Some(invocation.node().range()), GenerateError::Unknown(name.to_string())))?;
 
         let mut match_state = None;
 
@@ -103,7 +110,7 @@ impl Expander {
             let count_sign = sign.generics().count();
             let count_invocation = invocation.generics().count();
             if count_sign != count_invocation {
-                return Err((Some(invocation.node().span), GenerateError::IllegalArguments(count_sign, count_invocation)));
+                return Err((Some(invocation.node().range()), GenerateError::IllegalArguments(count_sign, count_invocation)));
             }
 
             // Expand all invocation arguments and bind them to their new variable names
@@ -116,7 +123,7 @@ impl Expander {
 
             for (bind, kind) in sign.generics().zip(invocation.generics()) {
                 if bind.generics().next().is_some() {
-                    return Err((Some(bind.node().span), GenerateError::MatchGenerics));
+                    return Err((Some(bind.node().range()), GenerateError::MatchGenerics));
                 }
                 let expanded = self.expand_fn(root, &kind, vars)?;
                 if match_state.is_none() {
@@ -124,7 +131,7 @@ impl Expander {
                     match_state_new.push_str(&expanded);
                     match_state_new.push('>');
                 }
-                new_vars.insert(bind.name().to_string(), expanded);
+                new_vars.insert(bind.name().as_str().to_string(), expanded);
             }
 
             if match_state.is_none() {
@@ -147,7 +154,7 @@ impl Expander {
             let next_name = self.expand_fn(root, &body, Some(&new_vars))?;
 
             self.functions.insert(signature, Some(FnBody {
-                span: f.node().span,
+                span: f.node().range(),
                 do_write: f.do_write().value(),
                 do_state: next_name,
                 do_move: f.do_move().operation()

@@ -58,12 +58,9 @@ impl<'a> Interactive<'a> {
     fn print_location(&mut self) {
         if let Some(f) = self.runner.next_fn() {
             println!("Next state: {}", self.runner.next_state);
-            let start = f.span.start as usize;
-            let end = f.span.end.map(|i| i as usize)
-                .unwrap_or_else(|| self.code[start..]
-                    .find('\n')
-                    .unwrap_or(self.code.len() - start));
-            let line = 1 + &self.code[..start].lines().count();
+            let start = f.span.start().to_usize();
+            let end = f.span.end().to_usize();
+            let line = &self.code[..=start].lines().count();
             println!("{} {}", line, &self.code[start..end]);
         }
 
@@ -158,7 +155,7 @@ impl<'a> Interactive<'a> {
                         }
                         if let Some(f) = self.runner.next_fn() {
                             for (i, &b) in &self.breakpoints {
-                                if b >= f.span.start && f.span.end.map(|end| b < end).unwrap_or(false) {
+                                if b >= u32::from(f.span.start()) && b < u32::from(f.span.end()) {
                                     println!("Breakpoint #{} reached", i);
                                     break 'run;
                                 }

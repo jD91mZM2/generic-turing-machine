@@ -1,105 +1,128 @@
-use arenatree::NodeId;
-use super::parser::*;
+use super::{
+    parser::*,
+    tokenizer::Token
+};
 
-pub trait TypedNode<'a> where Self: Sized {
-    fn cast(arena: &'a Arena, from: NodeId) -> Option<Self>;
-    fn arena(&self) -> &Arena;
-    fn node(&self) -> &ASTNode;
+use rowan::SmolStr;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Move {
+    Current,
+    Next,
+    Prev,
+}
+
+pub trait TypedNode<R: rowan::TreeRoot<Types>> where Self: Sized {
+    fn cast(node: Node<R>) -> Option<Self>;
+    fn node(&self) -> &Node<R>;
+    fn text<'a>(&'a self) -> Option<&'a str>
+        where R: 'a
+    {
+        self.node().borrowed()
+            .leaf_text()
+            .map(SmolStr::as_str)
+    }
 }
 
 macro_rules! impl_types {
-    ($($name:ident ($pat:pat) { $($block:tt)+ }),*) => {
+    ($($name:ident ($pat:pat) { $($block:tt)* }),*) => {
         $(
-        pub struct $name<'a>(&'a Arena, NodeId);
-        impl<'a> TypedNode<'a> for $name<'a> {
-            fn cast(arena: &'a Arena, from: NodeId) -> Option<Self> {
-                match arena[from].kind {
-                    $pat => Some($name(arena, from)),
+        pub struct $name<R: rowan::TreeRoot<Types>>(Node<R>);
+        impl<R: rowan::TreeRoot<Types>> TypedNode<R> for $name<R> {
+            fn cast(from: Node<R>) -> Option<Self> {
+                match from.kind() {
+                    $pat => Some($name(from)),
                     _ => None
                 }
             }
-            fn arena(&self) -> &Arena {
+            fn node(&self) -> &Node<R> {
                 &self.0
             }
-            fn node(&self) -> &ASTNode {
-                &self.0[self.1]
-            }
         }
-        impl<'a> $name<'a> { $($block)+ }
+        impl<R: rowan::TreeRoot<Types>> $name<R> { $($block)* }
         )*
     }
 }
 macro_rules! nth {
     ($self:expr; ($kind:ident) $n:expr) => {{
-        let arena = $self.arena();
-        $self.node().children(arena).nth($n)
-            .and_then(|node| $kind::cast(arena, node))
+        $self.node().children()
+            .filter_map($kind::cast)
+            .nth($n)
             .expect("invalid ast")
     }}
 }
 
 impl_types! {
-    Ident (ASTKind::Ident(_)) {
-        pub fn name(&self) -> &str {
-            match self.node().kind {
-                ASTKind::Ident(ref name) => &name,
-                _ => unreachable!()
-            }
-        }
-        pub fn generics(&'a self) -> impl Iterator<Item = Ident> {
-            let arena = self.arena();
-            self.node().children(arena)
-                .map(move |node| Ident::cast(arena, node).expect("invalid ast"))
+    Ident (Token::Ident) {
+        pub fn as_str(&self) -> &str {
+            self.text().unwrap_or_default()
         }
     },
-    Char (ASTKind::Char(_)) {
+    Type (Token::Type) {
+        pub fn name(&self) -> Ident<R> {
+            nth!(self; (Ident) 0)
+        }
+        pub fn generics(&self) -> impl Iterator<Item = Type<R>> {
+            self.node().children().filter_map(Type::cast)
+        }
+    },
+    Char (Token::Char) {
         pub fn value(&self) -> Option<u8> {
-            match self.node().kind {
-                ASTKind::Char(c) => c,
-                _ => unreachable!()
+            let s = self.text().unwrap();
+            let mut s = s.chars();
+            let c = s.next().unwrap();
+            if c >= '0' && c <= '9' {
+                Some(c as u8)
+            } else if c == '\'' {
+                let c = s.next().unwrap();
+                assert_eq!(s.next(), Some('\''));
+                assert!(c.is_ascii());
+                Some(c as u8)
+            } else if c == '_' {
+                None
+            } else {
+                panic!("invalid ast");
             }
         }
     },
-    Movement (ASTKind::Move(_)) {
+    Movement (Token::Move) {
         pub fn operation(&self) -> Move {
-            match self.node().kind {
-                ASTKind::Move(m) => m,
-                _ => unreachable!()
+            match self.node().first_child().expect("invalid ast").kind() {
+                Token::Current => Move::Current,
+                Token::Next => Move::Next,
+                Token::Prev => Move::Prev,
+                _ => panic!("invalid ast")
             }
         }
     },
-    SetStart (ASTKind::SetStart) {
-        pub fn target(&self) -> Ident {
-            nth!(self; (Ident) 0)
+    SetStart (Token::SetStart) {
+        pub fn target(&self) -> Type<R> {
+            nth!(self; (Type) 0)
         }
     },
-    Function (ASTKind::Function) {
-        pub fn match_state(&self) -> Ident {
-            nth!(self; (Ident) 0)
+    Function (Token::Function) {
+        pub fn match_state(&self) -> Type<R> {
+            nth!(self; (Type) 0)
         }
-        pub fn match_input(&self) -> Char {
+        pub fn match_input(&self) -> Char<R> {
+            nth!(self; (Char) 0)
+        }
+        pub fn do_write(&self) -> Char<R> {
             nth!(self; (Char) 1)
         }
-        pub fn do_write(&self) -> Char {
-            nth!(self; (Char) 2)
+        pub fn do_state(&self) -> Type<R> {
+            nth!(self; (Type) 1)
         }
-        pub fn do_state(&self) -> Ident {
-            nth!(self; (Ident) 3)
-        }
-        pub fn do_move(&self) -> Movement {
-            nth!(self; (Movement) 4)
+        pub fn do_move(&self) -> Movement<R> {
+            nth!(self; (Movement) 0)
         }
     },
-    Root (ASTKind::Root) {
-        pub fn start_assignments(&'a self) -> impl Iterator<Item = SetStart> {
-            let arena = self.arena();
-            self.node().children(arena)
-                .filter_map(move |node| SetStart::cast(arena, node))
+    Root (Token::Root) {
+        pub fn start_assignments(&self) -> impl Iterator<Item = SetStart<R>> {
+            self.node().children().filter_map(SetStart::cast)
         }
-        pub fn functions(&'a self) -> impl Iterator<Item = Function> {
-            let arena = self.arena();
-            self.node().children(arena)
-                .filter_map(move |node| Function::cast(arena, node))
+        pub fn functions(&self) -> impl Iterator<Item = Function<R>> {
+            self.node().children().filter_map(Function::cast)
         }
     }
 }
